@@ -1,0 +1,43 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data and database
+db/chroma/
+data/fastapi_docs.json
+
+# HuggingFace cache
+.cache/
+.huggingface/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
