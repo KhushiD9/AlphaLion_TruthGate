@@ -1,0 +1,23 @@
+# TruthGate dependency requirements
+# Install:
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# Python==3.14.5
+# Usage:
+#   python scrape.py --max-pages --
+#   python build_index.py
+#   python app.py "How do query parameters work in FastAPI?"
+#   python run_eval.py
+#
+# Ollama is required separately and must be installed on your system.
+# Recommended Ollama model: qwen3:4b
+
+requests==2.34.2
+beautifulsoup4==4.15.0
+langchain-text-splitters==1.1.2
+chromadb==1.5.9
+transformers==5.12.0
+sentence-transformers==5.5.1
+torch==2.12.0
