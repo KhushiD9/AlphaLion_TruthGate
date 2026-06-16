@@ -131,6 +131,13 @@ def ask_question(question: str) -> dict[str, Any]:
             "latency": time.perf_counter() - start_time,
         }
 
+    # checking the rectrieved chunks before rerancking
+    print("\nQUESTION:", question)
+
+    for i, candidate in enumerate(candidates[:5]):
+        print(f"\nRESULT {i+1}")
+        print(candidate["content"][:500])
+
     top_distance = candidates[0]["distance"]
     if top_distance is None or top_distance > REFUSAL_THRESHOLD:
         return {
