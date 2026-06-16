@@ -1,92 +1,152 @@
-# DECISIONS
+# Notes and Challenges
 
-## Data Collection
+## Overview of the System
 
-* Stored scraped pages in a local JSON file.
-* Kept page title, URL, and cleaned content for each document.
-* Re-scraping the documentation allows the knowledge base to be refreshed easily.
+The project follows a Retrieval-Augmented Generation (RAG) style pipeline built entirely using local components.
 
-## Chunking Strategy
+1. **scrape.py**
 
-* Used `RecursiveCharacterTextSplitter`.
-* Chunk size: 800 characters.
-* Chunk overlap: 150 characters.
-* Smaller chunks improve retrieval precision while overlap helps preserve context across chunk boundaries.
+   * Crawls the FastAPI documentation website.
+   * Extracts page content and stores it in a structured JSON file.
 
-## Embedding Model
+2. **build_index.py**
 
-* Selected `BAAI/bge-small-en-v1.5` for document and query embeddings.
-* Chosen because it provides good retrieval performance while remaining lightweight enough for local execution.
-* Ensured the same model is used during indexing and querying to avoid embedding mismatch issues.
+   * Splits documentation pages into chunks.
+   * Generates embeddings using BAAI/bge-small-en-v1.5.
+   * Stores embeddings and metadata in ChromaDB.
 
-## Vector Database
+3. **query_engine.py**
 
-* Used ChromaDB for storing embeddings and metadata.
-* Chosen because it is lightweight, open source, and easy to run locally.
-* Stores document chunks, embeddings, URLs, and section information.
+   * Converts user queries into embeddings.
+   * Retrieves relevant chunks from ChromaDB.
+   * Reranks results using a Cross Encoder.
+   * Uses Ollama (Qwen3) for classification and answer generation.
 
-## Retrieval Pipeline
+4. **cli.py**
 
-* Convert user query into an embedding.
-* Perform similarity search in ChromaDB.
-* Retrieve top-k candidate chunks.
-* Return the most relevant chunks for reranking.
+   * Provides a simple command-line interface for asking questions.
 
-## Reranking
+5. **run_eval.py**
 
-* Added a Cross Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) after retrieval.
-* Improves ranking quality by evaluating query-document pairs directly.
-* Helps surface the most relevant chunks before answer generation.
+   * Runs the evaluation dataset and reports system metrics.
 
-## Refusal Mechanism
+---
 
-* Introduced support for:
+## Initial Evaluation Results
 
-  * ANSWER
-  * REFUSAL
-  * FALSE_PREMISE
-* Prevents the system from generating unsupported answers.
-* Encourages evidence-based responses instead of hallucinations.
+During the first dry run, the system performed very poorly.
 
-## LLM Selection
+* Total Questions: 48
+* Accuracy: 16/48 = 0.33
+* Refusal Precision: 0.48
+* Refusal Recall: 1.00
+* False Premise Accuracy: 0.00
+* Average Latency: 0.34 seconds
 
-* Used Ollama with `qwen3:4b`.
-* Chosen because it runs locally and does not require paid APIs.
-* Used for:
+These results indicated that although the refusal mechanism was triggering correctly, the system was failing to answer many valid questions and was unable to detect false-premise queries properly.
 
-  * Answerability classification
-  * False-premise detection
-  * Final answer generation
+---
 
-## Evaluation
+## Issues 
 
-* Created a manually written evaluation set.
-* Included:
+While debugging the system, several major issues were found:
 
-  * Answerable questions
-  * Unanswerable questions
-  * False-premise questions
-  * Adversarial questions
-* Measured:
+### Embedding Mismatch
 
-  * Accuracy
-  * Refusal Precision
-  * Refusal Recall
-  * False Premise Accuracy
-  * Latency
+One of the most significant problems was that document embeddings and query embeddings were not being generated consistently.
 
-## Challenges Faced
+As a result, retrieval quality was extremely poor even when the answer existed in the documentation.
 
-* Initial retrieval quality was poor due to embedding inconsistencies.
-* Query embeddings and indexed embeddings were not generated using the same configuration.
-* Ollama output often contained reasoning text instead of direct labels.
-* Retrieval thresholds required tuning to avoid excessive refusals.
-* Scraping quality directly affected retrieval performance.
+After correcting the embedding pipeline and rebuilding the index, retrieval quality improved significantly.
 
-## Improvements
+### Scraping Quality
 
-* Cache embedding and reranking models globally to reduce latency.
-* Improve document cleaning during scraping.
-* Tune refusal thresholds using evaluation results.
-* Expand the evaluation dataset.
-* Improve answer formatting and citation quality.
+The initial scraper collected a large amount of noisy content from navigation menus, translated pages, release notes, and other sections that were not useful for question answering.
+
+This caused retrieval results to become noisy and reduced ranking quality.
+
+Several improvements were made to the scraper, but the dataset still contains noise that affects retrieval performance.
+
+### Ollama Classification Problems
+
+The classifier was instructed to output only:
+
+* ANSWERABLE
+* UNANSWERABLE
+* FALSE_PREMISE
+
+However, Qwen frequently produced long reasoning traces before the final label.
+
+For example, instead of returning:
+
+ANSWERABLE
+
+it would generate an entire explanation and then end with the label.
+
+Additional parsing logic had to be added to extract the final classification reliably.
+
+### Threshold Tuning
+
+The refusal threshold turned out to be difficult to tune.
+
+A strict threshold caused many valid questions to be rejected.
+
+A loose threshold increased the risk of answering unsupported questions.
+
+Finding a balance remains an ongoing challenge.
+
+### Latency
+
+The system currently reloads multiple models during execution:
+
+* Embedding model
+* Cross Encoder
+* Ollama inference
+
+This significantly increases response time.
+
+Even after retrieval improvements, latency remains one of the biggest unresolved issues.
+
+---
+
+## A Failing Case
+
+One of the worst failures occurred with the question:
+
+> "How do query parameters work in FastAPI?"
+
+This is a straightforward question directly covered in the FastAPI documentation.
+
+The retriever correctly returned highly relevant chunks from:
+
+* Query Parameters
+* Query Parameters and String Validations
+
+However, the classification stage incorrectly marked the query as FALSE_PREMISE or REFUSAL during several runs.
+
+The failure was not caused by retrieval.
+
+The relevant information was successfully retrieved.
+
+The issue occurred in the LLM classification layer, which sometimes ignored instructions and produced inconsistent outputs.
+
+This highlighted that the retrieval pipeline was functioning correctly while the decision layer remained unreliable.
+
+---
+
+## Current Status
+
+The retrieval pipeline is now substantially better than during the first evaluation run.
+
+Relevant chunks are being retrieved consistently, reranking is working correctly, and the embedding mismatch issue has been resolved.
+
+However, a few important problems still remain:
+
+* Classification reliability
+* Refusal threshold tuning
+* Scraping noise
+* High latency
+
+I am actively working on these issues, but due to the limited project timeline I was unable to fully resolve them before submission.
+
+The system demonstrates the complete architecture and workflow successfully, but there is still room for improvement in both accuracy and efficiency.
