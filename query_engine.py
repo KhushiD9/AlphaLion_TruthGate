@@ -117,8 +117,12 @@ def rerank_with_cross_encoder(question: str, candidates: list[dict]) -> list[dic
 def ask_question(question: str) -> dict[str, Any]:
     start_time = time.perf_counter()
     collection = load_chroma_collection()
+
+    embedder = BgeTextEmbedder()
+    query_embedding = embedder.embed_text(question)
+
     query_results = collection.query(
-        query_texts=[question],
+        query_embeddings=[query_embedding],
         n_results=TOP_K,
         include=["documents", "metadatas", "distances"],
     )
@@ -136,6 +140,8 @@ def ask_question(question: str) -> dict[str, Any]:
 
     for i, candidate in enumerate(candidates[:5]):
         print(f"\nRESULT {i+1}")
+        print("Distance:", candidate["distance"])
+        print(candidate["metadata"]["url"])
         print(candidate["content"][:500])
 
     top_distance = candidates[0]["distance"]

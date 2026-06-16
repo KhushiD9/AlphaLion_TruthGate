@@ -48,7 +48,7 @@ def extract_page_document(url: str, html: str) -> dict:
         content = soup.get_text(" ", strip=True)
     else:
         paragraphs = []
-        for element in main.find_all(["h1", "h2", "h3", "p", "li", "pre", "code", "blockquote"]):
+        for element in main.find_all(["h1", "h2", "h3", "p", "pre", "code", "blockquote"]):         
             text = element.get_text(" ", strip=True)
             if text:
                 paragraphs.append(text)
