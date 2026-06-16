@@ -6,7 +6,7 @@ from query_engine import ask_question
 def main() -> None:
     question = " ".join(sys.argv[1:]).strip()
     if not question:
-        print("Usage: python app.py \"<question>\"")
+        print("Usage: python cli.py \"<question>\"")
         sys.exit(1)
 
     try:

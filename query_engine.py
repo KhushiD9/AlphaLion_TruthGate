@@ -1,31 +1,65 @@
 import json
 import os
+import shutil
 import subprocess
 import time
+import re
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from chromadb import Client
 from chromadb.config import Settings
 from sentence_transformers import CrossEncoder
 from transformers import AutoModel, AutoTokenizer
 import torch
 
-CHROMA_DIR = Path("db/chroma")
+load_dotenv()
+
+CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", "db/chroma"))
 COLLECTION_NAME = "fastapi_fastapi_docs"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
-REFUSAL_THRESHOLD = 0.35
-TOP_K = 10
+OLLAMA_PATH = os.environ.get("OLLAMA_PATH", "ollama")
+REFUSAL_THRESHOLD = float(os.environ.get("REFUSAL_THRESHOLD", 0.35))
+TOP_K = int(os.environ.get("TOP_K", 10))
 
 
 def run_ollama(prompt: str, model: str = OLLAMA_MODEL, timeout: int = 180) -> str:
-    command = ["ollama", "run", model, "--no-stream", "--prompt", prompt]
+    if shutil.which(OLLAMA_PATH) is None:
+        raise RuntimeError(
+            f"Ollama executable not found at '{OLLAMA_PATH}'. "
+            "Install Ollama or set OLLAMA_PATH to the executable path."
+        )
+    
+    import tempfile
+    # Write prompt to temp file and pipe it to ollama
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+        f.write(prompt)
+        temp_file = f.name
+    
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        with open(temp_file, 'r', encoding='utf-8') as f:
+            result = subprocess.run(
+                [OLLAMA_PATH, "run", model],
+                stdin=f,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
     except FileNotFoundError as exc:
-        raise RuntimeError("ollama is not installed or not on PATH. Install ollama and ensure it is available.") from exc
+        raise RuntimeError(
+            f"Ollama executable not found at '{OLLAMA_PATH}'. "
+            "Install Ollama or set OLLAMA_PATH to the executable path."
+        ) from exc
+    finally:
+        import os as os_module
+        if os_module.path.exists(temp_file):
+            os_module.remove(temp_file)
+    
     if result.returncode != 0:
         raise RuntimeError(f"Ollama error: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -36,26 +70,36 @@ def normalize_answer(text: str) -> str:
 
 
 def classification_prompt(question: str, context: str) -> str:
-    return (
-        "Question:\n" + question + "\n\n"
-        "Retrieved Context:\n" + context + "\n\n"
-        "Classify the question with respect to the retrieved FastAPI documentation context.\n"
-        "Respond with exactly one token from: ANSWERABLE, UNANSWERABLE, FALSE_PREMISE.\n"
-        "If the question tries to force a false assumption not supported by the docs, answer FALSE_PREMISE.\n"
-    )
+    return f"""
+Answer with ONLY ONE WORD.
+
+ANSWERABLE
+UNANSWERABLE
+FALSE_PREMISE
+
+Question:
+{question}
+
+Context:
+{context}
+"""
 
 
-def render_answer_prompt(question: str, citations: list[dict], context: str) -> str:
+def render_answer_prompt(question, citations, context):
     citation_text = "\n".join(
-        [f"[{i+1}] {item['section']} - {item['url']}" for i, item in enumerate(citations)]
+        [f"[{i+1}] {item['section']} - {item['url']}"
+         for i, item in enumerate(citations)]
     )
+
     return (
-        "Use only the FastAPI documentation context below to answer the question.\n"
-        "If the answer is not available in the context, say you cannot answer from docs.\n\n"
-        "Question:\n" + question + "\n\n"
-        "Citations:\n" + citation_text + "\n\n"
-        "Context:\n" + context + "\n\n"
-        "Answer concisely and include the citations by index if a direct answer is available.\n"
+        "Answer using ONLY the provided context.\n"
+        "Do not think aloud.\n"
+        "Do not explain your reasoning.\n"
+        "Do not write Thinking...\n"
+        "Give the final answer directly.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Citations:\n{citation_text}\n\n"
+        f"Context:\n{context}\n"
     )
 
 
@@ -136,37 +180,60 @@ def ask_question(question: str) -> dict[str, Any]:
         }
 
     # checking the rectrieved chunks before rerancking
-    print("\nQUESTION:", question)
+    # print("\nQUESTION:", question)
 
     for i, candidate in enumerate(candidates[:5]):
-        print(f"\nRESULT {i+1}")
-        print("Distance:", candidate["distance"])
-        print(candidate["metadata"]["url"])
-        print(candidate["content"][:500])
+        # print(f"\nRESULT {i+1}")
+        # print("Distance:", candidate["distance"])
+        # print(candidate["metadata"]["url"])
+        # print(candidate["content"][:500])
+        pass
 
     top_distance = candidates[0]["distance"]
-    if top_distance is None or top_distance > REFUSAL_THRESHOLD:
-        return {
-            "type": "REFUSAL",
-            "message": "Not answerable from docs",
-            "citations": [],
-            "latency": time.perf_counter() - start_time,
-        }
+
+    # if top_distance is None or top_distance > REFUSAL_THRESHOLD:
+    #     return {
+    #         "type": "REFUSAL",
+    #         "message": "Not answerable from docs",
+    #         "citations": [],
+    #         "latency": time.perf_counter() - start_time,
+    #     }
+    # print("Top distance:", top_distance)
 
     reranked = rerank_with_cross_encoder(question, candidates)
     chosen = reranked[:5]
     context = "\n\n".join([item["content"] for item in chosen])
     top_context = "\n\n".join([item["content"] for item in chosen[:3]])
     classifier_input = classification_prompt(question, top_context)
-    classification = normalize_answer(run_ollama(classifier_input)).upper()
-    if "FALSE_PREMISE" in classification:
+
+    classification = normalize_answer(
+        run_ollama(classifier_input)
+    ).upper()
+
+    # print("\nCLASSIFICATION RAW:")
+    # print(classification)
+
+    matches = re.findall(
+        r"\b(ANSWERABLE|UNANSWERABLE|FALSE_PREMISE)\b",
+        classification,
+    )
+
+    predicted_label = matches[-1] if matches else None
+
+    # print("\nPREDICTED LABEL:", predicted_label)
+
+    if predicted_label is None:
+        predicted_label = "UNANSWERABLE"
+
+    if predicted_label == "FALSE_PREMISE":
         return {
             "type": "FALSE_PREMISE",
             "message": "The question contains a false premise not supported by FastAPI docs.",
             "citations": [item["metadata"] for item in chosen[:3]],
             "latency": time.perf_counter() - start_time,
         }
-    if "UNANSWERABLE" in classification:
+
+    if predicted_label == "UNANSWERABLE":
         return {
             "type": "REFUSAL",
             "message": "Not answerable from docs",
@@ -186,6 +253,9 @@ def ask_question(question: str) -> dict[str, Any]:
 # for the first example getting poor response may be the retrival chunks are bad
 # or threshold too strict ..can check others as well
 # latency is also an issue here
+
+# there was an issue with the embedding model
+# the issue was idexed with BDE but query with diff
 
 if __name__ == "__main__":
     example = "How do query parameters work in FastAPI?"
