@@ -313,7 +313,7 @@ Metrics measured:
 ### Current Results
 
 ```text
-Total Questions: 60
+Total Questions: 48
 
 Accuracy: 16/48 = 0.33
 Refusal Precision: 0.48
