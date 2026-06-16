@@ -26,7 +26,27 @@ REFUSAL_THRESHOLD = float(os.environ.get("REFUSAL_THRESHOLD", 0.35))
 TOP_K = int(os.environ.get("TOP_K", 10))
 
 
+EMBEDDER = None
+RERANKER = None
+
+
+def get_embedder():
+    global EMBEDDER
+    if EMBEDDER is None:
+        EMBEDDER = BgeTextEmbedder()
+    return EMBEDDER
+
+
+def get_reranker():
+    global RERANKER
+    if RERANKER is None:
+        RERANKER = CrossEncoder(CROSS_ENCODER)
+    return RERANKER
+
 def run_ollama(prompt: str, model: str = OLLAMA_MODEL, timeout: int = 180) -> str:
+    print("OLLAMA_PATH =", OLLAMA_PATH)
+    print("which =", shutil.which(OLLAMA_PATH))
+
     if shutil.which(OLLAMA_PATH) is None:
         raise RuntimeError(
             f"Ollama executable not found at '{OLLAMA_PATH}'. "
@@ -129,7 +149,13 @@ class BgeTextEmbedder:
         with torch.no_grad():
             output = self.model(**encoded)
             last_hidden_state = output.last_hidden_state
-            mask = encoded["attention_mask"].unsqueeze(-1).expand(last_hidden_state.size()).float()
+            mask = (
+            encoded["attention_mask"]
+            .unsqueeze(-1)
+            .expand(last_hidden_state.size())
+            .float()
+            .to(last_hidden_state.device)
+            )
             summed = (last_hidden_state * mask).sum(dim=1)
             divisor = mask.sum(dim=1).clamp(min=1e-9)
             embedding = (summed / divisor).cpu().tolist()[0]
@@ -146,30 +172,48 @@ def format_query_results(query_results: dict[str, list]) -> list[dict]:
         results.append({"content": doc, "metadata": meta, "distance": distance, "score": score})
     return results
 
-
 def rerank_with_cross_encoder(question: str, candidates: list[dict]) -> list[dict]:
     if not candidates:
         return []
+
     reranker = CrossEncoder(CROSS_ENCODER)
+
     pairs = [[question, candidate["content"]] for candidate in candidates]
     scores = reranker.predict(pairs)
+
     for candidate, score in zip(candidates, scores):
         candidate["rerank_score"] = float(score)
-    return sorted(candidates, key=lambda item: item["rerank_score"], reverse=True)
 
+    return sorted(
+        candidates,
+        key=lambda item: item["rerank_score"],
+        reverse=True,
+    )
 
 def ask_question(question: str) -> dict[str, Any]:
     start_time = time.perf_counter()
     collection = load_chroma_collection()
+    print("Collection count:", collection.count())
 
-    embedder = BgeTextEmbedder()
-    query_embedding = embedder.embed_text(question)
+    embedder = get_embedder()
 
-    query_results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=TOP_K,
-        include=["documents", "metadatas", "distances"],
+    query_text = (
+        "Represent this sentence for searching relevant passages: "
+        + question
     )
+
+    query_embedding = embedder.embed_text(query_text)
+
+    try:
+        query_results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=TOP_K,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as e:
+        print("CHROMA ERROR:", e)
+        raise
+
     candidates = format_query_results(query_results)
     if not candidates:
         return {
@@ -206,9 +250,13 @@ def ask_question(question: str) -> dict[str, Any]:
     top_context = "\n\n".join([item["content"] for item in chosen[:3]])
     classifier_input = classification_prompt(question, top_context)
 
-    classification = normalize_answer(
-        run_ollama(classifier_input)
-    ).upper()
+    try:
+        classification = normalize_answer(
+            run_ollama(classifier_input)
+        ).upper()
+    except Exception as e:
+        print("OLLAMA ERROR:", e)
+        raise
 
     # print("\nCLASSIFICATION RAW:")
     # print(classification)
